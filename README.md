@@ -24,6 +24,8 @@ The date I'm using is file creation date or file modification date, whichever is
 2. Create a Python environment, e.g. [miniconda](https://docs.anaconda.com/miniconda/miniconda-install/)
 3. `git clone https://github.com/ypei92/backfill_media_date.git && cd backfill_media_date`
 4. Setup Python dependencies via `pip install -r requirements.txt`
+5. Install [exiftool](https://exiftool.org/) and modify path in `backfill_media_date.py`
+6. Install [ffmpeg](https://www.ffmpeg.org/), e.g. via `conda`
 
 ## Execution
 1. Check formats (see if there are unsuppoted formats, skip or add functionality)
