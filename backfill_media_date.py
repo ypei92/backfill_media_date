@@ -1,4 +1,5 @@
 import os
+import copy
 import argparse
 import logging
 import shutil
@@ -16,11 +17,8 @@ FFMPEG_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 EXIFTOOL_EXE = "F:\Exiftool\exiftool.exe"  # exiftool path on Windows
 EXIFTOOL_BACKUP_SUFFIX = '_original'  # Default backup file suffix by exiftool
 EXIF_TIME_FORMAT = "%Y:%m:%d %H:%M:%S"
-DEFAULT_EXIF = piexif.dump({"0th": {},
-                            "Exif": {},
-                            "1st": {},
-                            "thumbnail": None,
-                            "GPS": {}})
+DEFAULT_EXIF = {"0th": {}, "Exif": {}, "1st": {}, "thumbnail": None, "GPS": {}}
+
 
 def main():
   # This script needs to run on windows
@@ -53,21 +51,24 @@ def main():
         process_jpg(args.real_run, media_path)
 
       case "png":
-        datetime_str = get_date_created_str(media_path, EXIF_TIME_FORMAT)
+        datetime_str = get_earliest_date_str(media_path, EXIF_TIME_FORMAT)
         process_png(args.real_run, media_path, datetime_str)
 
       case "gif":
-        process_gif(args.real_run, media_path)
+        process_gif(args.real_run, media_path, backup_dir, sfx)
 
       case "bmp":
-        datetime_str = get_date_created_str(media_path, EXIF_TIME_FORMAT)
+        datetime_str = get_earliest_date_str(media_path, EXIF_TIME_FORMAT)
         process_bmp(args.real_run, media_path, datetime_str, backup_dir, sfx)
 
       case "mp4" | "m4v":
         process_mp4(args.real_run, media_path, backup_dir, sfx)
 
+      case "mov" | "tif" | "heic":
+        logger.debug(f"Suffix .{sfx} seems fine: {media_name}")
+
       case _:
-        logger.info(f"Suffix .{sfx} is not supported: {media_name}")
+        raise Exception(f"Suffix .{sfx} is not supported: {media_name}")
 
 
 def process_jpg(real_run: bool, media_path: str) -> None:
@@ -79,23 +80,20 @@ def process_jpg(real_run: bool, media_path: str) -> None:
   """
   img = Image.open(media_path)
 
-  # Create exif if not present: save and re-open
-  if "exif" not in img.info:
-    logger.info("[No Exif metadata] %s" % media_path)
-    if real_run:
-      img.save(media_path, exif=DEFAULT_EXIF, quality="keep", optimize=False)
-      img = Image.open(media_path)
-    else:
-      return
-
   # Skip images already with the "Date taken" field: DateTimeOriginal
-  exif_dict = piexif.load(img.info["exif"])
+  try:
+    exif_dict = piexif.load(img.info["exif"])
+
+  except Exception as e:
+    logger.info("[No Exif metadata or corrupted] %s" % media_path)
+    exif_dict = copy.deepcopy(DEFAULT_EXIF)
+
   if piexif.ExifIFD.DateTimeOriginal in exif_dict["Exif"]:
     logger.debug("[Date Taken is already present (JPG)] %s" % media_path)
     return
 
   # Assign creation date to data taken
-  datetime_str = get_date_created_str(media_path, EXIF_TIME_FORMAT)
+  datetime_str = get_earliest_date_str(media_path, EXIF_TIME_FORMAT)
   exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = datetime_str
   logger.info("[Assign Date Taken (JPG)] %s %s" % (media_path, datetime_str))
 
@@ -140,18 +138,24 @@ def process_bmp(real_run: bool, media_path: str, datetime_str: str,
     process_png(real_run, new_media_path, datetime_str)
 
 
-def process_gif(real_run: bool, media_path: str) -> None:
+def process_gif(real_run: bool, media_path: str, backup_dir: str, suffix: str) -> None:
   """
   Process a gif image: assign -XMP with exiftool
   """
-  datetime_str = get_date_created_str(media_path, EXIF_TIME_FORMAT)
-  logger.info("[Assign XMP:DateTimeOriginal to GIF)] %s %s" % (media_path, datetime_str))
+  if media_path.endswith("_immich." + suffix):
+    logger.info("[Skip already-processed (GIF)] %s" % (media_path))
+    return
+
+  datetime_str = get_earliest_date_str(media_path, EXIF_TIME_FORMAT)
+  new_media_path = media_path.replace('.' + suffix, "_immich." + suffix)
+  logger.info("[Assign XMP:DateTimeOriginal to GIF)] %s %s" % (new_media_path, datetime_str))
   if real_run:
     set_xmp_exiftool(media_path, datetime_str)
-    os.remove(media_path + EXIFTOOL_BACKUP_SUFFIX)
+    os.rename(media_path, new_media_path)
+    shutil.move(media_path + EXIFTOOL_BACKUP_SUFFIX, backup_dir)
 
 
-def process_mp4(real_run: bool, media_path: str, backup_dir: str, sfx: str) -> None:
+def process_mp4(real_run: bool, media_path: str, backup_dir: str, suffix: str) -> None:
   """
   Process a mp4 or m4v video.
   If any "tags" is missing or "creation_time" not in "tags" keys, use ffmpeg to
@@ -166,8 +170,8 @@ def process_mp4(real_run: bool, media_path: str, backup_dir: str, sfx: str) -> N
       break
 
   if not has_creation_time:
-    new_media_path = media_path.replace('.' + sfx, "_new." + sfx)
-    datetime_str = get_date_created_str(media_path, FFMPEG_TIME_FORMAT)
+    new_media_path = media_path.replace('.' + suffix, "_immich." + suffix)
+    datetime_str = get_earliest_date_str(media_path, FFMPEG_TIME_FORMAT)
     metadata = {"metadata": "creation_time=" + datetime_str}
     logger.info("[Assign Media Created (MP4)] %s %s", new_media_path, datetime_str)
 
@@ -184,10 +188,12 @@ def process_mp4(real_run: bool, media_path: str, backup_dir: str, sfx: str) -> N
       shutil.move(media_path, backup_dir)
 
 
-def get_date_created_str(media_path: str, time_format: str) -> str:
+def get_earliest_date_str(media_path: str, time_format: str) -> str:
   """Return datetime string for metadata: Date Created"""
   date_c = os.path.getctime(media_path)
-  datetime_str = datetime.fromtimestamp(date_c).strftime(time_format)
+  date_m = os.path.getmtime(media_path)
+  date_approx = date_c if date_c < date_m else date_m
+  datetime_str = datetime.fromtimestamp(date_approx).strftime(time_format)
 
   return datetime_str
 
