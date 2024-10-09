@@ -64,7 +64,7 @@ def main():
       case "mp4" | "m4v":
         process_mp4(args.real_run, media_path, backup_dir, sfx)
 
-      case "mov" | "tif" | "heic":
+      case "mov" | "tif" | "heic" | "webp":
         logger.debug(f"Suffix .{sfx} seems fine: {media_name}")
 
       case _:
@@ -100,7 +100,12 @@ def process_jpg(real_run: bool, media_path: str) -> None:
   # Save image with new exif metadata
   exif_bytes = piexif.dump(exif_dict)
   if real_run:
-    img.save(media_path, exif=exif_bytes, quality="keep", optimize=True)
+    try:
+      img.save(media_path, exif=exif_bytes, quality="keep", optimize=True)
+    except ValueError as e:
+      logger.error(f"[Error] {e}")
+      input("Press Enter to acknownledge and continue ...")
+      img.save(media_path, exif=exif_bytes, quality=95, optimize=True)  # 95 highest
 
 
 def process_png(real_run: bool, media_path: str, datetime_str: str) -> None:
